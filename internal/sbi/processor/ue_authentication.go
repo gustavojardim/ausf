@@ -7,8 +7,10 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"hash"
+	"log"
 	"math/rand"
 	"net/http"
 	"strconv"
@@ -20,12 +22,18 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 
+	akma "github.com/free5gc/ausf/internal/akma"
 	ausf_context "github.com/free5gc/ausf/internal/context"
 	"github.com/free5gc/ausf/internal/logger"
 	"github.com/free5gc/ausf/pkg/factory"
 	"github.com/free5gc/openapi/models"
 	"github.com/free5gc/util/ueauth"
 )
+
+type AanfRequestBody struct {
+	Kakma []byte `json:"kakma"`
+	AkId  string `json:"akid"`
+}
 
 func (p *Processor) HandleEapAuthComfirmRequest(c *gin.Context, eapSession models.EapSession, eapSessionId string) {
 	logger.Auth5gAkaLog.Infof("EapAuthComfirmRequest")
@@ -327,6 +335,64 @@ func (p *Processor) UeAuthPostRequestProcedure(c *gin.Context, updateAuthenticat
 			c.JSON(http.StatusInternalServerError, problemDetails)
 			return
 		}
+
+		var mcc string
+		var mnc string
+
+		supiOrSuci := updateAuthenticationInfo.SupiOrSuci // This comes from the incoming request
+
+		parts := strings.Split(supiOrSuci, "-")
+
+		if len(parts) >= 3 {
+			mcc = parts[0] // Mobile Country Code
+			mnc = parts[1] // Mobile Network Code
+			// msin := parts[3] // Mobile Subscription Identification Number
+		}
+
+		Kakma, akId, err := akma.DerivateAkmaKey(KausfDecode, []byte(ausfUeContext.Supi), "random-rid", mcc, mnc)
+
+		if err != nil {
+			logger.AuthELog.Errorf("Error derivating Kakma and akId: %v", err)
+		}
+
+		url := "http://localhost:8000/naanf-akma/v1/register-anchorkey"
+
+		// Create the request body
+		body := AanfRequestBody{
+			Kakma: Kakma,
+			AkId:  akId,
+		}
+
+		// Serialize the request body to JSON
+		jsonData, err := json.Marshal(body)
+		if err != nil {
+			logger.AuthELog.Errorf("Error marshalling JSON: %v", err)
+		}
+
+		// Create the POST request
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+		if err != nil {
+			logger.AuthELog.Errorf("Error creating request: %v", err)
+		}
+
+		// Set the appropriate headers
+		req.Header.Set("Content-Type", "application/json")
+
+		// Execute the request
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			logger.AuthELog.Errorf("Error sending request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		// Check the response
+		if resp.StatusCode == http.StatusCreated {
+			log.Println("Successfully registered anchor key.")
+		} else {
+			log.Printf("Failed to register anchor key. Status: %s", resp.Status)
+		}
+
 		ausfUeContext.XresStar = authInfoResult.AuthenticationVector.XresStar
 		ausfUeContext.Kausf = Kausf
 		ausfUeContext.Kseaf = hex.EncodeToString(Kseaf)
