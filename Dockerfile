@@ -20,7 +20,7 @@ RUN cd cmd && go build -o ausf
 FROM debian:bookworm-slim
 
 # Set the working directory
-WORKDIR /root/
+WORKDIR /free5gc
 
 # Copy the built binary from the builder
 COPY --from=builder /app/cmd/ausf .
